@@ -1,116 +1,130 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import {
+	App,
+	Component,
+	Editor, getIcon,
+	MarkdownRenderer,
+	MarkdownView,
+	Modal,
+	Notice,
+	Plugin,
+	PluginSettingTab,
+	Setting
+} from 'obsidian';
 
-// Remember to rename these classes and interfaces!
 
-interface MyPluginSettings {
-	mySetting: string;
+// $arg
+const ARG_PATTERN = /\$(\d+)/g
+// - macro{arg1, arg2, ...}
+// - macro{}
+const MACRO_PATTERN = /^(\w+){([^}]*)}$/
+// For splitting on args. hello, world -> ["hello", "world"]
+const PASSED_ARGS_PATTERN = /,\s+/
+
+interface Replacement {
+	name: string
+	args: number
+	replacement: string
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
+// the loadData doesn't make them classes anymore (just plain objects) and typescript doesn't detect that.
+// So I use functions instead which more or less are just methods
+
+/**
+ * Replaces args inside replacement and returns the new string
+ * @param args Args to use. Position corresponds to arg number
+ */
+function run(r: Replacement, args: string[]): string {
+	let result = r.replacement;
+	for (let i = 0; i < r.args; ++i) {
+		result = result.replaceAll(`$${i}`, args[i])
+	}
+	return result;
 }
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+/**
+ * Parses a replacement string and updates current args and replacement.
+ * @param text Text to parse. Finds arguments in this
+ */
+function parseArgs(replacement: Replacement, text: string) {
+	const args = [...text.matchAll(ARG_PATTERN)]
+	// TODO: Check if user skipped a number
+	replacement.args = args.length;
+	replacement.replacement = text;
+}
+
+interface Settings {
+	replacements: Replacement[]
+}
+
+const DEFAULT_SETTINGS: Settings = {
+	replacements: []
+}
+
+export default class SimpleMacros extends Plugin {
+	settings: Settings
+	// Lookup table to make searching faster. name -> replacement
+	lookup: Record<string, Replacement>
 
 	async onload() {
+		// Load in settings
 		await this.loadSettings();
-
-		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-		// Perform additional things with the ribbon
-		ribbonIconEl.addClass('my-plugin-ribbon-class');
-
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status Bar Text');
-
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-sample-modal-simple',
-			name: 'Open sample modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'sample-editor-command',
-			name: 'Sample editor command',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
-
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-			}
-		});
-
-		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new SampleSettingTab(this.app, this));
 
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			console.log('click', evt);
+		// Register processor
+		// Replaces `{name(args)}` with a matching template (Does nothing if nothing matches
+		this.registerMarkdownPostProcessor((element, context) => {
+			console.log("Running processor")
+			console.dir(element)
+			element.querySelectorAll("code").forEach(elem => {
+				const text = elem.textContent || ""
+				// Get arguments from text
+				const match = text.match(MACRO_PATTERN)
+				if (match && match[1] in this.lookup) {
+					element.replaceWith()
+					const args = match[2].split(PASSED_ARGS_PATTERN)
+					const replacement = this.lookup[match[1]]
+					const newText = run(replacement, args)
+					const newElem = createDiv()
+					// @ts-ignore
+					MarkdownRenderer.renderMarkdown(newText, newElem, context.sourcePath, null)
+					// We first need to get the markdown out of the div. And then get the actual content
+					// out of the <p>
+					elem.replaceWith(newElem.children[0].children[0])
+				}
+			})
 		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
 	}
+
 
 	onunload() {
 
 	}
 
+	/**
+	 * Updates lookup table with value in settings
+	 */
+	updateLookup() {
+		if (!this.lookup) this.lookup = {}
+		this.settings.replacements.map(r => this.lookup[r.name] = r)
+		console.dir(this.lookup)
+	}
+
 	async loadSettings() {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		this.updateLookup()
 	}
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+		this.updateLookup()
 	}
 }
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
-
-	onOpen() {
-		const {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
-}
 
 class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
+	plugin: SimpleMacros;
 
-	constructor(app: App, plugin: MyPlugin) {
+	constructor(app: App, plugin: SimpleMacros) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
@@ -119,19 +133,42 @@ class SampleSettingTab extends PluginSettingTab {
 		const {containerEl} = this;
 
 		containerEl.empty();
-
 		containerEl.createEl('h2', {text: 'Settings for my awesome plugin.'});
 
-		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
-			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
-				.onChange(async (value) => {
-					console.log('Secret: ' + value);
-					this.plugin.settings.mySetting = value;
-					await this.plugin.saveSettings();
-				}));
+		const settings = new Setting(containerEl)
+		this.plugin.settings.replacements.map(r => {
+			const replacementSetting = new Setting(containerEl)
+			replacementSetting
+				.addText(txt => txt
+						.setValue(r.name)
+				.setPlaceholder("Name of macro")
+					.onChange(async (value) => {
+						r.name = value
+						await this.plugin.saveSettings()
+					})
+				)
+				.addText(txt => txt
+					.setValue(r.replacement)
+					.setPlaceholder("Replacement string")
+					.onChange(async (value) => {
+						parseArgs(r, value)
+						await this.plugin.saveSettings()
+					}))
+				.addButton(btn => btn
+					.setIcon("trash")
+					.onClick(async () => {
+						this.plugin.settings.replacements.remove(r)
+						await this.plugin.saveSettings()
+						await this.display()
+					})
+				)
+		})
+		settings.addButton(btn => btn
+			.setButtonText("Add")
+			.onClick(async () => {
+				this.plugin.settings.replacements.push({name: "", replacement: "", args: 0} as Replacement)
+				await this.display()
+			})
+		)
 	}
 }
